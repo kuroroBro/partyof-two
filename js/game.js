@@ -61,12 +61,23 @@ export function startGame(room, byId, options = {}) {
   });
   room.qIndex = 0; room.phase = "question"; room.current = createQuestion(room, options.question || room.deck[0]); return {};
 }
-function createQuestion(room, q) { const entry = q || room.deck[0] || { mode: room.settings.modes[0], prompt: "", answer: null, points: 1 }; return { ...entry, mode: entry.mode || room.settings.modes[0], responses: {}, startedAt: Date.now() }; }
+// requiredIds is a snapshot of who must answer, taken once when the
+// question is dealt -- NOT re-derived from live `.connected` status on
+// every submission. A player's connection blipping mid-question (screen
+// lock, a moment of bad signal -- routine on mobile) must not shrink the
+// quorum and trigger an early reveal before they actually got to answer.
+function createQuestion(room, q) { const entry = q || room.deck[0] || { mode: room.settings.modes[0], prompt: "", answer: null, points: 1 }; return { ...entry, mode: entry.mode || room.settings.modes[0], responses: {}, startedAt: Date.now(), requiredIds: room.players.filter(p => p.connected).map(p => p.id) }; }
 export function currentQuestion(room) { return room.current || room.deck[room.qIndex] || null; }
 export function submitResponse(room, playerId, response) {
   if (room.phase !== "question") return { error: "No question is open" }; const p = getPlayer(room, playerId); if (!p || !p.connected) return { error: "Player is unavailable" }; if (room.current.responses[playerId] !== undefined) return { error: "Response already locked" };
   room.current.responses[playerId] = response; p.response = response; return { ok: true };
 }
+export function allPlayersSubmitted(room) { const requiredIds = room.current?.requiredIds || []; return room.phase === "question" && requiredIds.length > 0 && requiredIds.every(id => Object.prototype.hasOwnProperty.call(room.current?.responses || {}, id)); }
+// Pure, deterministic (given an injected `now`) so the host's polling loop
+// in main.js can call this on a plain interval without game.js touching
+// timers itself -- same convention as this repo's sibling party games.
+export function questionTimeRemainingMs(room, now = Date.now()) { if (room.phase !== "question" || !room.settings.timerSeconds) return null; const deadline = (room.current?.startedAt || now) + room.settings.timerSeconds * 1000; return Math.max(0, deadline - now); }
+export function questionTimerExpired(room, now = Date.now()) { const remaining = questionTimeRemainingMs(room, now); return remaining !== null && remaining <= 0; }
 const norm = v => String(v ?? "").trim().toLowerCase();
 function resolvePair(q, pair, players) { const vals = players.map(p => q.responses[p.id]).filter(v => v !== undefined); if (!vals.length) return false; if (q.mode === "averages" && q.answer != null) return Math.abs(vals.reduce((a,v)=>a+Number(v),0)/vals.length - Number(q.answer)) < 1e-9; if (q.mode === "two-words") return vals.length === 2 && vals.map(norm).sort().join("|") === (q.answers || []).map(norm).sort().join("|"); return vals.some(v => norm(v) === norm(q.answer)) || (q.accepted || []).map(norm).includes(norm(vals[vals.length - 1])); }
 export function resolveQuestion(room, now = Date.now()) {

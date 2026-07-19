@@ -25,7 +25,10 @@
 - [ ] Implement In the Mix clue mixing and Out of the Mix word removal.
 - [ ] Implement Two Words pair-only split-answer validation.
 - [ ] Implement Timeline ordering and In the Mix 2 option construction.
-- [ ] Add deterministic role rotation and timer behavior for every mode.
+- [x] Add question-level timer behavior: a shared deadline set when the
+      question is dealt, force-resolving on expiry regardless of who has
+      answered (see Bugfixes below). Per-mode role rotation is still
+      outstanding.
 - [x] Add viewer-specific redaction for answers, clues, options, and pending
       private responses.
 
@@ -44,8 +47,8 @@
       the show without leaking private answers.
 - [ ] Build private response controls for numeric, emoji, word, order, and
       multiple-choice modes.
-- [x] Add Host controls for round flow, reveal, and rematch; timer/steal remain
-      follow-up controls.
+- [x] Add Host controls for round flow, reveal, and rematch; steal remains a
+      follow-up control (timer is implemented — see Bugfixes below).
 - [ ] Render the final pair leaderboard in the visual direction of the
       supplied mockup, with accessible rank and score text.
 
@@ -57,6 +60,39 @@
 - [x] Run `node --test tests/*.test.mjs` and module syntax checks locally.
 - [ ] Browser smoke-test odd roster rejection, mutual pairing, all modes,
       reveal privacy, reconnect, rematch, and tied winners.
+
+## Bugfixes (2026-07-20)
+
+- [x] **Submitting an answer stole focus from every other player still
+      typing.** `renderQuestion()` tore down and recreated the answer
+      `<input>`/`<button>` on every state broadcast, including ones
+      triggered by someone else's submission. A freshly created DOM node
+      has no focus, and on mobile that silently dismisses the on-screen
+      keyboard mid-thought. Fixed by reusing the existing input/button
+      across re-renders and only rebuilding them when the question itself
+      changes (`js/main.js`).
+- [x] **Reveal could fire before everyone had actually answered.**
+      `allPlayersSubmitted` re-derived "who must answer" from live
+      `.connected` status on every submission. A player's WebRTC
+      connection blipping mid-question (screen lock, a moment of bad
+      signal — routine on mobile) silently dropped them from the quorum,
+      so their partner's submission alone could trigger an early reveal.
+      Fixed by snapshotting `requiredIds` once when the question is
+      dealt (`createQuestion`) and checking submissions against that
+      fixed list instead (`js/game.js`).
+- [x] **The round timer did nothing.** `timerSeconds` was collected at
+      setup and stored in `room.settings`, but nothing ever read it again
+      — no countdown UI, no expiry, no auto-resolve. Added
+      `questionTimeRemainingMs`/`questionTimerExpired` (pure, `game.js`)
+      plus a 250ms client-side repaint loop and a Host-only expiry check
+      that force-resolves the question when time runs out
+      (`js/main.js`).
+- Added regression tests for the quorum and timer fixes in
+  `tests/game.test.mjs` (9/9 passing); live-verified all three fixes via
+  Playwright with two real browser contexts over an actual PeerJS
+  connection (focus preservation, timer countdown + force-resolve with
+  zero submissions, and the normal both-answered happy path still
+  resolving promptly).
 
 ## Open decisions before implementation
 
