@@ -20,7 +20,9 @@
       lock, and start validation.
 - [x] Implement pair-level scores, ties, question reveal, rematch, and winner
       calculation.
-- [ ] Implement Averages numeric validation, mean, distance, and tie handling.
+- [x] Implement Averages numeric validation, mean, distance, and tie
+      handling (see Bugfixes below — the shipped version had scored an
+      exact match to the target instead).
 - [ ] Implement Emojis clue/guess validation and timeout steal flow.
 - [ ] Implement In the Mix clue mixing and Out of the Mix word removal.
 - [ ] Implement Two Words pair-only split-answer validation.
@@ -93,6 +95,48 @@
   connection (focus preservation, timer countdown + force-resolve with
   zero submissions, and the normal both-answered happy path still
   resolving promptly).
+
+## Bugfixes (2026-07-20, part 2 — "same questions keep repeating")
+
+- [x] **`startGame` cloned a single question `perRound` times per mode.**
+      `js/questions.js` only had one question per mode to begin with, and
+      the deck builder took `source.find(q => q.mode === mode)` — the
+      first match — and repeated *that exact object* `perRound` times
+      with only the `id` suffix changing. Fixed by authoring 15 distinct
+      questions per mode (105 total, up from 7) and rewriting the deck
+      builder to shuffle and draw `perRound` distinct questions per mode,
+      preferring ones not yet used on this device (new
+      `usedIds`/`markQuestionsUsed` plumbing in `js/storage.js`, mirrored
+      after this portfolio's other question-bank games).
+- [x] **Even with a diverse deck, `advance()` never actually advanced.**
+      Separately, and more directly responsible for "the same question
+      repeats within one game": `advance()` called
+      `createQuestion(room)` with no second argument, and
+      `createQuestion`'s fallback (`q || room.deck[0]`) means every round
+      after the first re-dealt `deck[0]` again, forever, regardless of
+      `room.qIndex`. Fixed by passing `room.deck[room.qIndex]` explicitly.
+- [x] **Averages mode scored an exact match instead of "closest pair
+      wins."** Per spec.md's own Averages row ("closest pair to the
+      correct number wins... exact ties share the point"), this is a
+      House of Games "On Average"-style round: pairs are judged against
+      *each other*, not against a fixed target. The shipped
+      `resolvePair` instead required a pair's average to equal the
+      target within `1e-9` — a bar real human guesses essentially never
+      clear, so the mode never paid out regardless of how close a pair
+      got. Rewrote `resolveQuestion` to compute every pair's distance
+      from the target for `averages` questions, award the point to
+      whichever pair(s) are tied for closest, and leave every other
+      mode's independent per-pair judging (`resolvePair`) unchanged.
+- Added regression tests: content-bank size/uniqueness per mode, a real
+  (non-stubbed) `startGame` producing distinct prompts within one mode,
+  `advance()` walking the deck instead of re-dealing card zero,
+  `usedIds` filtering across a rematch, and three averages-scoring cases
+  (closest-wins over an imperfect-but-closer guess, a tied distance
+  paying out both pairs, and a non-answering pair losing to an
+  imperfect one). 16/16 passing. Live-verified via Playwright: a full
+  5-round single-mode show showed 5 distinct prompts, and a 4-player/
+  2-pair game confirmed the pair with the genuinely closer (not exact)
+  average was the one who actually scored.
 
 ## Open decisions before implementation
 

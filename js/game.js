@@ -47,6 +47,7 @@ export function confirmPair(room, playerId, partnerId) {
 }
 export function clearPair(room, pairId) { const pair = getPair(room, pairId); if (!pair) return false; pair.memberIds.forEach(id => { const p = getPlayer(room,id); if (p) p.pairId = null; }); room.pairs = room.pairs.filter(p => p.id !== pairId); return true; }
 function validRoster(room) { const connected = room.players.filter(p => p.connected); return connected.length >= MIN_PLAYERS && connected.length % 2 === 0 && connected.every(p => p.pairId && getPair(room,p.pairId)?.memberIds.length === 2); }
+function shuffle(arr, rng) { const a = arr.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 export function startGame(room, byId, options = {}) {
   if (byId !== room.hostId) return { error: "Only the host can start the game" };
   if (!validRoster(room)) return { error: "Need an even number of connected players with valid pairs" };
@@ -54,10 +55,19 @@ export function startGame(room, byId, options = {}) {
   room.players.forEach(p => { p.score = 0; p.response = null; }); room.pairs.forEach(p => p.score = 0);
   room.settings = { ...room.settings, ...options, modes };
   const perRound = Math.max(1, Number(options.questionsPerRound || room.settings.questionsPerRound || 3));
-  const source = options.deck || questionsForModes(modes);
+  const rng = options.rng || Math.random;
+  const usedIds = new Set(options.usedIds || []);
+  // Draw `perRound` DISTINCT questions per mode instead of cloning the
+  // first match `perRound` times (the old behavior, which made every
+  // round of a mode show the exact same prompt). Prefer questions not
+  // yet seen on this device; once a mode's fresh pool runs dry, fall
+  // back to its full pool rather than under-filling the round.
   room.deck = options.deck || modes.flatMap((mode) => {
-    const base = source.find((q) => q.mode === mode) || { mode, prompt: `${mode} challenge`, answer: "answer", points: 1 };
-    return Array.from({ length: perRound }, (_, i) => ({ ...base, id: `${base.id || mode}-${i + 1}` }));
+    const all = questionsForModes([mode]);
+    if (!all.length) return Array.from({ length: perRound }, (_, i) => ({ mode, prompt: `${mode} challenge`, answer: "answer", points: 1, id: `${mode}-${i + 1}` }));
+    const fresh = all.filter((q) => !usedIds.has(q.id));
+    const pool = fresh.length >= perRound ? fresh : all;
+    return shuffle(pool, rng).slice(0, Math.min(perRound, pool.length));
   });
   room.qIndex = 0; room.phase = "question"; room.current = createQuestion(room, options.question || room.deck[0]); return {};
 }
@@ -79,13 +89,30 @@ export function allPlayersSubmitted(room) { const requiredIds = room.current?.re
 export function questionTimeRemainingMs(room, now = Date.now()) { if (room.phase !== "question" || !room.settings.timerSeconds) return null; const deadline = (room.current?.startedAt || now) + room.settings.timerSeconds * 1000; return Math.max(0, deadline - now); }
 export function questionTimerExpired(room, now = Date.now()) { const remaining = questionTimeRemainingMs(room, now); return remaining !== null && remaining <= 0; }
 const norm = v => String(v ?? "").trim().toLowerCase();
-function resolvePair(q, pair, players) { const vals = players.map(p => q.responses[p.id]).filter(v => v !== undefined); if (!vals.length) return false; if (q.mode === "averages" && q.answer != null) return Math.abs(vals.reduce((a,v)=>a+Number(v),0)/vals.length - Number(q.answer)) < 1e-9; if (q.mode === "two-words") return vals.length === 2 && vals.map(norm).sort().join("|") === (q.answers || []).map(norm).sort().join("|"); return vals.some(v => norm(v) === norm(q.answer)) || (q.accepted || []).map(norm).includes(norm(vals[vals.length - 1])); }
+function pairVals(q, players) { return players.map(p => q.responses[p.id]).filter(v => v !== undefined); }
+// two-words / everything else: judged independently, one pair at a time.
+function resolvePair(q, pair, players) { const vals = pairVals(q, players); if (!vals.length) return false; if (q.mode === "two-words") return vals.length === 2 && vals.map(norm).sort().join("|") === (q.answers || []).map(norm).sort().join("|"); return vals.some(v => norm(v) === norm(q.answer)) || (q.accepted || []).map(norm).includes(norm(vals[vals.length - 1])); }
 export function resolveQuestion(room, now = Date.now()) {
   if (room.phase !== "question") return { error: "Question is not open" }; const q = room.current || currentQuestion(room); const results = [];
-  for (const pair of room.pairs) { const members = pair.memberIds.map(id => getPlayer(room,id)).filter(Boolean); const correct = resolvePair(q, pair, members); const points = correct ? Number(q.points || 1) : 0; pair.score += points; members.forEach(p => { p.score += points / members.length; p.response = null; }); results.push({ pairId: pair.id, correct, points }); }
+  // averages is a House of Games "On Average"-style round: pairs are
+  // judged AGAINST EACH OTHER, not against a fixed exact target. Only
+  // whichever pair's combined average lands closest to the true answer
+  // scores -- landing on it exactly (the old rule) is a near-impossible
+  // bar real guesses almost never clear, so it never actually paid out.
+  let closestPairIds = null;
+  if (q.mode === "averages" && q.answer != null) {
+    const distances = room.pairs.map((pair) => { const members = pair.memberIds.map(id => getPlayer(room,id)).filter(Boolean); const vals = pairVals(q, members); if (!vals.length) return { pairId: pair.id, distance: Infinity }; const avg = vals.reduce((a,v)=>a+Number(v),0)/vals.length; return { pairId: pair.id, distance: Math.abs(avg - Number(q.answer)) }; });
+    const minDistance = Math.min(...distances.map(d => d.distance));
+    closestPairIds = new Set(Number.isFinite(minDistance) ? distances.filter(d => d.distance === minDistance).map(d => d.pairId) : []);
+  }
+  for (const pair of room.pairs) { const members = pair.memberIds.map(id => getPlayer(room,id)).filter(Boolean); const correct = closestPairIds ? closestPairIds.has(pair.id) : resolvePair(q, pair, members); const points = correct ? Number(q.points || 1) : 0; pair.score += points; members.forEach(p => { p.score += points / members.length; p.response = null; }); results.push({ pairId: pair.id, correct, points }); }
   room.lastResult = { answer: q.answer ?? null, results, at: now }; room.phase = "reveal"; return room.lastResult;
 }
-export function advance(room) { if (room.phase !== "reveal") return { error: "Reveal is not open" }; room.qIndex++; if (room.qIndex >= room.deck.length) { room.phase = "over"; const max = Math.max(...room.pairs.map(p=>p.score), 0); room.winnerPairIds = room.pairs.filter(p=>p.score===max).map(p=>p.id); return { done: true }; } room.current = createQuestion(room); room.phase = "question"; return { done: false, question: room.current }; }
+// createQuestion(room) with no second argument falls back to
+// room.deck[0] every time -- passing room.deck[room.qIndex] explicitly
+// is what actually advances through the round instead of re-dealing the
+// first card of the deck for the rest of the show.
+export function advance(room) { if (room.phase !== "reveal") return { error: "Reveal is not open" }; room.qIndex++; if (room.qIndex >= room.deck.length) { room.phase = "over"; const max = Math.max(...room.pairs.map(p=>p.score), 0); room.winnerPairIds = room.pairs.filter(p=>p.score===max).map(p=>p.id); return { done: true }; } room.current = createQuestion(room, room.deck[room.qIndex]); room.phase = "question"; return { done: false, question: room.current }; }
 export function rematch(room, byId, retainPairs = true) { if (byId !== room.hostId || room.phase !== "over") return { error: "Only the host can rematch" }; room.players = room.players.filter(p=>p.connected); room.players.forEach(p=>{p.score=0;p.response=null;if(!retainPairs)p.pairId=null;}); room.pairs.forEach(p=>p.score=0); if(!retainPairs)room.pairs=[]; room.phase = retainPairs ? "pairing" : "lobby"; return {}; }
 export function publicState(room) { const hasResponse = id => Boolean(room.current?.responses && Object.prototype.hasOwnProperty.call(room.current.responses, id)); return { code: room.code, hostId: room.hostId, phase: room.phase, players: room.players.map(({resumeToken,response,...p})=>({...p, submitted: hasResponse(p.id)})), pairs: room.pairs.map(p=>{const memberNames=p.memberIds.map(id=>getPlayer(room,id)?.name).filter(Boolean);return {...p, members:p.memberIds, memberNames, name:memberNames.join(" + ")};}), settings: room.settings, qIndex: room.qIndex, current: room.current ? (({answer, responses, ...q})=>q)(room.current) : null, currentQuestion: room.current ? (({answer, responses, ...q})=>q)(room.current) : null, lastResult: room.phase === "reveal" || room.phase === "over" ? room.lastResult : null, winnerPairIds: room.winnerPairIds };
 }
