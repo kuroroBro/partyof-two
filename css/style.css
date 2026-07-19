@@ -102,6 +102,8 @@ input:focus, select:focus { border-color: var(--coral); }
 .pair-buttons .choice { min-height: 52px; font-size: .85rem; box-shadow: 0 5px 14px rgba(43, 33, 64, .12); }
 .answer-form { display: grid; gap: 10px; margin: 14px 0; }
 .answer-form .btn { width: 100%; }
+.answer-form input:disabled { border-color: #8ad7b9; background: #effbf6; color: var(--ink); opacity: 1; }
+.answer-status { color: var(--teal-2); font-size: .82rem; font-weight: 850; text-align: center; }
 .room-invite { min-width: 105px; display: grid; gap: 4px; justify-items: center; }
 .room-invite small { max-width: 120px; color: #cdeae7; font-size: .6rem; overflow-wrap: anywhere; text-align: center; }
 .room-qr { width: 88px; height: 88px; }
