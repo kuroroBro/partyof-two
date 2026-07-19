@@ -23,7 +23,8 @@
 - [x] Implement Averages numeric validation, mean, distance, and tie
       handling (see Bugfixes below — the shipped version had scored an
       exact match to the target instead).
-- [ ] Implement Emojis clue/guess validation and timeout steal flow.
+- [x] Implement Emojis clue/guess validation and timeout steal flow (see
+      Bugfixes below — previously this mode had no role split at all).
 - [ ] Implement In the Mix clue mixing and Out of the Mix word removal.
 - [ ] Implement Two Words pair-only split-answer validation.
 - [ ] Implement Timeline ordering and In the Mix 2 option construction.
@@ -137,6 +138,60 @@
   5-round single-mode show showed 5 distinct prompts, and a 4-player/
   2-pair game confirmed the pair with the genuinely closer (not exact)
   average was the one who actually scored.
+
+## Feature (2026-07-20, part 3) — Emojis clue-giver/guesser/steal flow
+
+Per spec.md's Emojis row, this is a House of Games-style "one pair up,
+others may steal" format — structurally different from every other
+mode (which has ALL pairs answering the SAME question in parallel).
+Previously it had no role split at all: both partners saw the identical
+free-text input, and either one's matching guess scored the pair, same
+as any generic mode.
+
+- [x] **Role assignment**: `assignEmojiRoles` (`js/game.js`) round-robins
+      which pair is "up" across consecutive Emojis questions
+      (`room.nextActivePairIndex`), and alternates clue-giver/guesser
+      within that pair each time via a per-pair `nextClueGiverSlot` flag
+      — everyone gets a turn at both roles across a show. Needs at least
+      2 pairs to mean anything; with fewer, falls back to the generic
+      all-pairs-answer path untouched.
+- [x] **Per-viewer privacy**: `publicState(room, viewerId)` now takes a
+      viewer id. Only the clue-giver's snapshot includes the real
+      `answer`; everyone else's `current.prompt` is replaced with a
+      generic non-spoiling line — necessary because the authored prompts
+      name the answer outright ("describe the movie Titanic"), so
+      redacting only `answer` and leaving `prompt` untouched would have
+      leaked it anyway. `main.js`'s broadcast switched from
+      `transport.broadcast` (one shared payload) to the
+      already-present-but-unused `transport.broadcastEach` (per-recipient
+      payloads) to actually deliver this.
+- [x] **Steal flow**: a wrong guess or a timeout opens `stealOpen` (via
+      `resolveQuestion`, which now branches per-mode instead of one path
+      for everything). Any player on a pair other than the one up may
+      `claimSteal` — first tap wins the buzzer-style race, and the
+      button disappears for everyone else. `submitStealResponse`: correct
+      awards that pair the normal point value (same as a clean win, per
+      owner decision); wrong marks that pair as having tried and reopens
+      for the remaining eligible pairs; once every other pair has missed,
+      the question resolves with nobody scoring. No separate timer for
+      the steal window — it stays open until resolved or the Host
+      manually advances.
+- [x] `js/main.js`: new per-viewer-role rendering (`clueGiver` /
+      `guesser` / `stealAvailable` / `stealing` / `stealBlocked` /
+      `stealSpent` / `spectating`, precomputed server-side as
+      `state.viewerRole`), reusing the same focus-preserving text-input
+      pattern from the earlier bugfix for both the guesser's answer and
+      a steal attempt.
+- Added 10 regression tests covering role assignment, privacy redaction,
+  the clue-giver being blocked from submitting, correct/wrong guesses,
+  steal claiming (including blocking the active pair and re-claims),
+  the multi-pair reopen-until-exhausted sequence, role/pair rotation
+  across consecutive questions, and the <2-pairs fallback. 26/26
+  passing. Live-verified with 6 real browser contexts (3 pairs) over an
+  actual PeerJS connection: confirmed the guesser's prompt never matches
+  the clue-giver's (no leaked answer), the Steal button appeared only
+  for the two non-active pairs, and a missed steal correctly reopened
+  the window for the last remaining pair instead of ending the round.
 
 ## Open decisions before implementation
 

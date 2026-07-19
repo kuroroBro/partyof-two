@@ -5,10 +5,17 @@ const $=id=>document.getElementById(id), screens=['home','lobby','question','rev
 const show=s=>screens.forEach(x=>$(`screen-${x}`).classList.toggle('hidden',x!==s));
 const me=()=>state?.players?.find(p=>p.id===myId); const call=(names,...args)=>{for(const n of names)if(typeof game[n]==='function')return game[n](...args);return null};
 function invite(code){const url=`${location.origin}${location.pathname}?room=${code}`;$('room-invite-url').textContent=url;$('room-qr').replaceChildren();if(typeof qrcode==='function'){const qr=qrcode(0,'M');qr.addData(url);qr.make();$('room-qr').innerHTML=qr.createSvgTag({cellSize:3,margin:1})}return url}
-function publish(){const publicState=call(['toPublicState','publicState'],hostRoomState,myId)||hostRoomState;state=publicState;transport?.broadcast('state',publicState);render()}
-function hostMessage(id,event,payload){let r;if(event==='join'){r=payload.resumeToken?game.rejoinPlayer(hostRoomState,id,payload.resumeToken):{error:'No saved seat found'};if(r?.error)r=game.addPlayer(hostRoomState,id,payload.name,payload.resumeToken)}else if(event==='proposePair')r=game.proposePair(hostRoomState,id,payload.targetId);else if(event==='start'){r=game.startGame(hostRoomState,id,{...payload,usedIds:loadUsedQuestionIds()});if(!r?.error)markQuestionsUsed(hostRoomState.deck.map(q=>q.id))}else if(event==='submitResponse'){r=game.submitResponse(hostRoomState,id,payload.response);if(!r?.error&&game.allPlayersSubmitted(hostRoomState))game.resolveQuestion(hostRoomState)}else if(event==='next'){game.resolveQuestion(hostRoomState);r=game.advance(hostRoomState)}else if(event==='rematch')r=game.rematch(hostRoomState,id,true);if(r?.error)toast(r.error);publish();return {ok:!r?.error,state:game.publicState(hostRoomState)}}
+// Emojis needs each player to see a DIFFERENT view of the same question
+// (only the clue-giver may see the answer) -- publicState(room, viewerId)
+// already computes that per-viewer, but broadcasting it usefully means
+// sending each connection its OWN payload via broadcastEach, not one
+// shared `broadcast` payload to everyone (which is all this used to do,
+// so a stray answer field would have leaked identically to every device
+// the instant Emojis roles existed).
+function publish(){state=call(['toPublicState','publicState'],hostRoomState,myId)||hostRoomState;transport?.broadcastEach?.(viewerId=>({event:'state',payload:call(['toPublicState','publicState'],hostRoomState,viewerId)}));render()}
+function hostMessage(id,event,payload){let r;if(event==='join'){r=payload.resumeToken?game.rejoinPlayer(hostRoomState,id,payload.resumeToken):{error:'No saved seat found'};if(r?.error)r=game.addPlayer(hostRoomState,id,payload.name,payload.resumeToken)}else if(event==='proposePair')r=game.proposePair(hostRoomState,id,payload.targetId);else if(event==='start'){r=game.startGame(hostRoomState,id,{...payload,usedIds:loadUsedQuestionIds()});if(!r?.error)markQuestionsUsed(hostRoomState.deck.map(q=>q.id))}else if(event==='submitResponse'){r=game.submitResponse(hostRoomState,id,payload.response);if(!r?.error&&game.allPlayersSubmitted(hostRoomState))game.resolveQuestion(hostRoomState)}else if(event==='claimSteal')r=game.claimSteal(hostRoomState,id);else if(event==='submitSteal')r=game.submitStealResponse(hostRoomState,id,payload.response);else if(event==='next'){game.resolveQuestion(hostRoomState);r=game.advance(hostRoomState)}else if(event==='rematch')r=game.rematch(hostRoomState,id,true);if(r?.error)toast(r.error);publish();return {ok:!r?.error,state:game.publicState(hostRoomState,id)}}
 function hostClose(id){if(hostRoomState)game.removePlayer(hostRoomState,id);publish()}
-async function create(){try{isHost=true;const name=$('name-input').value.trim()||'Host';transport=await hostRoom({onMessage:hostMessage,onPeerClose:hostClose,onError:e=>toast(e)});myId='host';hostRoomState=game.createRoom(transport.code,myId);if(!$('display-checkbox').checked)game.addPlayer(hostRoomState,myId,name);state=game.publicState(hostRoomState);localStorage.setItem('partyofTwoLast',transport.code);render()}catch(e){$('home-error').textContent=e.message}}
+async function create(){try{isHost=true;const name=$('name-input').value.trim()||'Host';transport=await hostRoom({onMessage:hostMessage,onPeerClose:hostClose,onError:e=>toast(e)});myId='host';hostRoomState=game.createRoom(transport.code,myId);if(!$('display-checkbox').checked)game.addPlayer(hostRoomState,myId,name);state=game.publicState(hostRoomState,myId);localStorage.setItem('partyofTwoLast',transport.code);render()}catch(e){$('home-error').textContent=e.message}}
 async function join(){try{isHost=false;const code=normalizeCode($('code-input').value);if(code.length!==4)throw Error('Enter the four-letter room code.');const saved=loadPlayerSession(code);const resumeToken=saved?.resumeToken||createResumeToken();transport=await joinRoom(code,{onPush:(e,p)=>{if(e==='state'){state=p;render()}},onClose:e=>toast(e)});myId=transport.id;const result=await transport.send('join',{name:$('name-input').value.trim()||saved?.name||'Player',resumeToken});savePlayerSession(code,{resumeToken,name:$('name-input').value.trim()||saved?.name||'Player'});state=result?.state||state;render()}catch(e){$('home-error').textContent=e.message}}
 function render(){if(!state)return;const phase=state.phase||'lobby';show(phase==='lobby'||phase==='pairing'?'lobby':phase);if(phase==='lobby'||phase==='pairing')renderLobby();if(phase==='question')renderQuestion();if(phase==='reveal')renderReveal();if(phase==='over')renderOver()}
 function renderLobby(){ $('lobby-code').textContent=state.code||'----';invite(state.code);const players=state.players||[];$('lobby-players').replaceChildren(...players.map(p=>{const row=document.createElement('div');row.className='leader-row';row.innerHTML=`<span class="leader-rank">${p.pairId?'🤝':'?'}</span><span class="leader-name"></span><span class="leader-score">${p.pairId||'Unpaired'}</span>`;row.querySelector('.leader-name').textContent=`${p.name}${p.connected===false?' · offline':''}`;return row}));const self=me();$('pairing-controls').classList.toggle('hidden',!self||phaseNotPairing());const buttons=$('pair-buttons');buttons.replaceChildren(...players.filter(p=>p.id!==myId&&!p.pairId).map(p=>{const b=document.createElement('button');b.className='choice';b.textContent=`Pair with ${p.name}`;b.onclick=()=>act('proposePair',{targetId:p.id});return b}));$('host-settings').classList.toggle('hidden',!isHost);$('start-btn').classList.toggle('hidden',!isHost);$('start-btn').disabled=players.length<2||players.length%2===1||players.some(p=>!p.pairId);$('pair-status').textContent=`${players.length} players · ${players.length%2?'Need an even number · ':''}${players.filter(p=>!p.pairId).length} unpaired`;}
@@ -21,7 +28,65 @@ function phaseNotPairing(){return state.phase!=='pairing'&&state.phase!=='lobby'
 // that silently dismisses the on-screen keyboard out from under them.
 // Reuse the existing nodes across renders; only rebuild when the
 // question itself actually changes.
-function renderQuestion(){const q=state.current||state.currentQuestion||{};$('question-progress').textContent=`Question ${(state.qIndex||0)+1}`;$('question-text').textContent=q.prompt||q.question||'Your pair is up!';$('round-name').textContent=q.round||q.mode||'Pair challenge';$('score-pill').textContent=me()?.score!=null?`${me().score} pts`:'Host';const self=me();const pair=self?.pairId&&state.pairs?.find(p=>p.id===self.pairId);const partner=pair?.members?.map(id=>state.players.find(p=>p.id===id)).find(p=>p&&p.id!==myId);const status=partner?`You: ${self.submitted?'submitted':'thinking'} · ${partner.name}: ${partner.submitted?'submitted':'thinking'}`:self?`You: ${self.submitted?'submitted':'thinking'}`:'';const form=$('answer-form');const key=q.id||`question-${state.qIndex||0}`;if(self){let input=form.querySelector('input'),btn=form.querySelector('button'),note=form.querySelector('.answer-status');if(form.dataset.questionKey!==key||!input){form.replaceChildren();form.dataset.questionKey=key;input=document.createElement('input');input.placeholder='Your private answer';input.value=answerDrafts.get(key)||'';input.setAttribute('aria-label','Your answer');input.oninput=()=>answerDrafts.set(key,input.value);btn=document.createElement('button');btn.className='btn btn-primary';btn.onclick=()=>{answerDrafts.set(key,input.value);act('submitResponse',{response:input.value})};note=document.createElement('small');note.className='answer-status';form.append(input,btn,note)}input.disabled=Boolean(self.submitted);btn.disabled=Boolean(self.submitted);btn.textContent=self.submitted?'Submitted':'Lock answer';note.textContent=status}else{form.replaceChildren();delete form.dataset.questionKey}$('question-players').textContent=(state.players||[]).map(p=>`${p.name}${p.pairId?' 🤝':''}${p.submitted?' ✓':''}`).join(' · ');paintTimer()}
+// Shared, focus-preserving text-answer control used by every path that
+// needs one (the normal generic answer, the emojis guesser, and the
+// emojis steal attempt): reuses the existing <input>/<button> across
+// re-renders and only rebuilds them when `key` actually changes, so a
+// partner's submission -- or anyone else's, in any of these modes --
+// never steals focus/dismisses the on-screen keyboard mid-type.
+function renderTextAnswerForm(form,key,placeholder,onSubmit,locked,statusText){
+  let input=form.querySelector('input'),btn=form.querySelector('button'),note=form.querySelector('.answer-status');
+  if(form.dataset.questionKey!==key||!input){
+    form.replaceChildren();form.dataset.questionKey=key;
+    input=document.createElement('input');input.placeholder=placeholder||'Your private answer';input.value=answerDrafts.get(key)||'';input.setAttribute('aria-label','Your answer');input.oninput=()=>answerDrafts.set(key,input.value);
+    btn=document.createElement('button');btn.className='btn btn-primary';btn.onclick=()=>{answerDrafts.set(key,input.value);onSubmit(input.value)};
+    note=document.createElement('small');note.className='answer-status';
+    form.append(input,btn,note);
+  }
+  input.disabled=locked;btn.disabled=locked;btn.textContent=locked?'Submitted':'Lock answer';
+  if(statusText!==undefined)note.textContent=statusText||'';
+}
+// Emojis is a "one pair up, others may steal" format (see game.js) --
+// every player sees a different thing depending on their relationship to
+// the current question. viewerRole comes precomputed from publicState;
+// this just turns it into the right UI, distinct from the shared
+// all-pairs-answer-in-parallel path every other mode uses.
+function renderEmojiQuestion(form,q,role){
+  const clueGiverName=state.players.find(p=>p.id===q.clueGiverId)?.name||'Their teammate';
+  const guesserName=state.players.find(p=>p.id===q.guesserId)?.name||'Their teammate';
+  const claimerName=q.stealClaimerId&&state.players.find(p=>p.id===q.stealClaimerId)?.name;
+  const key=`${q.id||`question-${state.qIndex||0}`}:${role}`;
+  const passive=(text)=>{form.replaceChildren();delete form.dataset.questionKey;const note=document.createElement('p');note.className='answer-status';note.textContent=text;form.append(note)};
+  if(role==='clueGiver')return passive(`🤫 No talking -- emojis only! ${guesserName} is guessing.`);
+  if(role==='guesser')return renderTextAnswerForm(form,key,'Your teammate is emoji-ing something…',(value)=>act('submitResponse',{response:value}),Boolean(me()?.submitted));
+  if(role==='stealing')return renderTextAnswerForm(form,key,'One guess -- make it count!',(value)=>act('submitSteal',{response:value}),false);
+  if(role==='stealAvailable'){form.replaceChildren();delete form.dataset.questionKey;const btn=document.createElement('button');btn.className='btn btn-primary';btn.textContent='🔔 Steal!';btn.onclick=()=>act('claimSteal',{});form.append(btn);return}
+  if(role==='stealBlocked')return passive(`${claimerName||'Another pair'} is attempting to steal…`);
+  if(role==='stealSpent')return passive('Your pair already tried stealing this one.');
+  return passive(`${clueGiverName} & ${guesserName} are up this round.`); // spectating, steal not open yet
+}
+function renderQuestion(){
+  const q=state.current||state.currentQuestion||{};
+  $('question-progress').textContent=`Question ${(state.qIndex||0)+1}`;
+  $('round-name').textContent=q.round||q.mode||'Pair challenge';
+  $('score-pill').textContent=me()?.score!=null?`${me().score} pts`:'Host';
+  const self=me();
+  const form=$('answer-form');
+  const role=state.viewerRole;
+  if(role){
+    $('question-text').textContent=q.prompt||(role==='clueGiver'?'Describe this using only emojis!':'Your teammate is emoji-ing something. What is it?');
+    renderEmojiQuestion(form,q,role);
+  } else {
+    $('question-text').textContent=q.prompt||q.question||'Your pair is up!';
+    const pair=self?.pairId&&state.pairs?.find(p=>p.id===self.pairId);
+    const partner=pair?.members?.map(id=>state.players.find(p=>p.id===id)).find(p=>p&&p.id!==myId);
+    const status=partner?`You: ${self.submitted?'submitted':'thinking'} · ${partner.name}: ${partner.submitted?'submitted':'thinking'}`:self?`You: ${self.submitted?'submitted':'thinking'}`:'';
+    if(self){const key=q.id||`question-${state.qIndex||0}`;renderTextAnswerForm(form,key,null,(value)=>act('submitResponse',{response:value}),Boolean(self.submitted),status)}
+    else{form.replaceChildren();delete form.dataset.questionKey}
+  }
+  $('question-players').textContent=(state.players||[]).map(p=>`${p.name}${p.pairId?' 🤝':''}${p.submitted?' ✓':''}`).join(' · ');
+  paintTimer();
+}
 // Both roles repaint their own countdown locally from the shared
 // startedAt + timerSeconds deadline (no per-frame network traffic); only
 // the Host's tick loop below is allowed to actually force a resolve.
@@ -37,7 +102,11 @@ function toast(m){$('toast').textContent=m;$('toast').classList.remove('hidden')
 // clock may actually force a resolve when time runs out -- previously
 // nothing ever did, so a timer setting was collected at setup but never
 // enforced or even displayed.
-setInterval(()=>{if(state?.phase==='question')paintTimer();if(isHost&&hostRoomState&&game.questionTimerExpired(hostRoomState)){game.resolveQuestion(hostRoomState);publish()}},250);
+// Once emojis opens its steal window, room.phase stays "question" (see
+// game.js) but the timer's deadline has already passed forever after --
+// only publish when resolveQuestion actually changed something, or this
+// would re-broadcast every 250ms for the rest of the steal phase.
+setInterval(()=>{if(state?.phase==='question')paintTimer();if(isHost&&hostRoomState&&game.questionTimerExpired(hostRoomState)){const res=game.resolveQuestion(hostRoomState);if(!res?.error)publish()}},250);
 $('create-btn').onclick=create;$('join-btn').onclick=join;$('code-input').oninput=e=>e.target.value=normalizeCode(e.target.value);$('copy-link-btn').onclick=()=>navigator.clipboard?.writeText(invite(state.code)).then(()=>toast('Invite link copied'));
 $('start-btn').onclick=()=>act('start',{questionsPerRound:Number($('questions-select').value),timerSeconds:Number($('timer-select').value)});
 const prefill=new URLSearchParams(location.search).get('room');if(prefill)$('code-input').value=normalizeCode(prefill);
