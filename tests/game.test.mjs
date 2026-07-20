@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRoom, addPlayer, proposePair, startGame, submitResponse, resolveQuestion, publicState, rejoinPlayer, allPlayersSubmitted, removePlayer, questionTimeRemainingMs, questionTimerExpired, advance, claimSteal, submitStealResponse } from '../js/game.js';
+import { createRoom, addPlayer, proposePair, startGame, submitResponse, submitMixClues, submitMixDistractor, submitMixGuess, submitOutMixClues, submitOutMixBlock, submitOutMixGuess, submitMix2Clues, submitMix2Option, submitMix2Choice, resolveQuestion, publicState, rejoinPlayer, allPlayersSubmitted, removePlayer, questionTimeRemainingMs, questionTimerExpired, advance, claimSteal, submitStealResponse } from '../js/game.js';
 import { MODES, QUESTIONS, questionsForModes } from '../js/questions.js';
 
 function room() { const r = createRoom('ab12','p1'); for (let i=1;i<=4;i++) addPlayer(r,`p${i}`,`Player ${i}`,`t${i}`); proposePair(r,'p1','p2'); proposePair(r,'p2','p1'); proposePair(r,'p3','p4'); proposePair(r,'p4','p3'); return r; }
@@ -56,9 +56,9 @@ test('starting a real (non-stubbed) deck draws distinct questions per mode inste
 test('advance() walks through the deck instead of re-dealing the first card forever', () => {
   const r = room();
   const deck = [
-    { mode: 'timeline', prompt: 'first', answer: 'a', points: 1 },
-    { mode: 'timeline', prompt: 'second', answer: 'b', points: 1 },
-    { mode: 'timeline', prompt: 'third', answer: 'c', points: 1 },
+    { mode: 'generic', prompt: 'first', answer: 'a', points: 1 },
+    { mode: 'generic', prompt: 'second', answer: 'b', points: 1 },
+    { mode: 'generic', prompt: 'third', answer: 'c', points: 1 },
   ];
   startGame(r, 'p1', { deck });
   assert.equal(r.current.prompt, 'first');
@@ -239,4 +239,311 @@ test('emojis: with fewer than 2 pairs, falls back to the generic all-pairs-answe
   assert.equal(r.current.guesserId, undefined);
   // Both players may answer directly, same as any generic mode.
   assert.equal(submitResponse(r, 'p1', 'titanic').ok, true);
+});
+
+// ---------- in the mix: clues, opposing distractors, then one guess ----------
+function mixRoom(builder = room) { const r = builder(); startGame(r, 'p1', { deck: [{ mode: 'in-the-mix', prompt: 'Describe the secret subject.', answer: 'Pizza', points: 1 }] }); return r; }
+
+test('in the mix: assigns one active pair and keeps the target secret from the guesser and opponents', () => {
+  const r = mixRoom();
+  const { clueGiverId, guesserId, activePairId } = r.current;
+  const opponent = r.players.find((p) => p.pairId !== activePairId);
+  assert.equal(r.current.stage, 'clues');
+  assert.equal(publicState(r, clueGiverId).current.answer, 'Pizza');
+  assert.equal(publicState(r, clueGiverId).viewerRole, 'mixClueGiver');
+  assert.equal(publicState(r, guesserId).current.answer, undefined);
+  assert.equal(publicState(r, guesserId).current.clueWords, undefined);
+  assert.equal(publicState(r, guesserId).viewerRole, 'mixGuesser');
+  assert.equal(publicState(r, opponent.id).current.answer, undefined);
+  assert.equal(publicState(r, opponent.id).viewerRole, 'mixDistractor');
+});
+
+test('in the mix: validates exactly three distinct one-word clues from the designated clue-giver', () => {
+  const r = mixRoom();
+  assert.match(submitMixClues(r, r.current.guesserId, ['hot', 'cheesy', 'round']).error, /clue-giver/);
+  assert.match(submitMixClues(r, r.current.clueGiverId, ['hot', 'very cheesy', 'round']).error, /one word/);
+  assert.match(submitMixClues(r, r.current.clueGiverId, ['hot', 'Hot', 'round']).error, /different/);
+  const result = submitMixClues(r, r.current.clueGiverId, ['hot', 'cheesy', 'round'], 1000);
+  assert.equal(result.stage, 'distractors');
+  assert.deepEqual(r.current.clueWords, ['hot', 'cheesy', 'round']);
+  assert.equal(r.current.stageStartedAt, 1000);
+});
+
+test('in the mix: each opposing pair adds one unique distractor and the guesser alone receives the stable mix', () => {
+  const r = mixRoom(room3);
+  const { activePairId, clueGiverId, guesserId } = r.current;
+  submitMixClues(r, clueGiverId, ['hot', 'cheesy', 'round']);
+  const opposingPairs = r.pairs.filter((pair) => pair.id !== activePairId);
+  const first = r.players.find((p) => p.pairId === opposingPairs[0].id);
+  const firstPartner = r.players.find((p) => p.pairId === first.pairId && p.id !== first.id);
+  const second = r.players.find((p) => p.pairId === opposingPairs[1].id);
+  assert.equal(submitMixDistractor(r, first.id, 'Moon').stage, 'distractors');
+  assert.match(submitMixDistractor(r, firstPartner.id, 'plate').error, /already submitted/);
+  assert.match(submitMixDistractor(r, second.id, 'HOT').error, /already in the mix/);
+  assert.equal(submitMixDistractor(r, second.id, 'plate').stage, 'guessing');
+  assert.deepEqual(new Set(r.current.mixedWords.map((word) => word.toLowerCase())), new Set(['hot', 'cheesy', 'round', 'moon', 'plate']));
+  assert.deepEqual(publicState(r, guesserId).current.mixedWords, r.current.mixedWords);
+  assert.deepEqual(publicState(r, clueGiverId).current.mixedWords, r.current.mixedWords);
+  assert.equal(publicState(r, first.id).current.mixedWords, undefined);
+  assert.equal(publicState(r, guesserId).current.clueWords, undefined, 'the guesser sees only the shuffled mix, not which words were genuine');
+});
+
+test('in the mix: only the designated guesser can answer and only the active pair scores', () => {
+  const r = mixRoom();
+  const { activePairId, clueGiverId, guesserId } = r.current;
+  submitMixClues(r, clueGiverId, ['hot', 'cheesy', 'round']);
+  const opponent = r.players.find((p) => p.pairId !== activePairId);
+  submitMixDistractor(r, opponent.id, 'moon');
+  assert.match(submitMixGuess(r, opponent.id, 'Pizza').error, /designated guesser/);
+  const result = submitMixGuess(r, guesserId, 'pizza');
+  assert.equal(r.phase, 'reveal');
+  assert.equal(result.results.find((entry) => entry.pairId === activePairId).correct, true);
+  assert.equal(r.pairs.find((pair) => pair.id === activePairId).score, 1);
+  assert.equal(r.pairs.find((pair) => pair.id !== activePairId).score, 0);
+  assert.deepEqual(r.lastResult.clueWords, ['hot', 'cheesy', 'round']);
+  assert.equal(Object.values(r.lastResult.distractors)[0].word, 'moon');
+});
+
+test('in the mix: distractor timeout advances to guessing and resets the stage timer', () => {
+  const r = mixRoom(room3);
+  submitMixClues(r, r.current.clueGiverId, ['hot', 'cheesy', 'round'], 1000);
+  const result = resolveQuestion(r, 5000);
+  assert.equal(result.stage, 'guessing');
+  assert.equal(r.phase, 'question');
+  assert.equal(r.current.stageStartedAt, 5000);
+  assert.deepEqual(new Set(r.current.mixedWords), new Set(['hot', 'cheesy', 'round']));
+});
+
+test('in the mix: real deck prompts never reveal their target text', () => {
+  for (const question of questionsForModes(['in-the-mix'])) {
+    assert.equal(question.prompt.toLowerCase().includes(String(question.answer).toLowerCase()), false, `${question.id} leaks its answer in the prompt`);
+  }
+});
+
+test('in the mix: active pairs rotate and teammates swap clue-giver roles when their pair returns', () => {
+  const r = room();
+  const deck = ['Pizza', 'Beach', 'Coffee'].map((answer, index) => ({ mode: 'in-the-mix', prompt: `mix ${index}`, answer, points: 1 }));
+  startGame(r, 'p1', { deck });
+  const first = { pairId: r.current.activePairId, clueGiverId: r.current.clueGiverId };
+  const play = () => {
+    submitMixClues(r, r.current.clueGiverId, ['bright', 'happy', 'round']);
+    const opponent = r.players.find((player) => player.pairId !== r.current.activePairId);
+    submitMixDistractor(r, opponent.id, 'cloud');
+    submitMixGuess(r, r.current.guesserId, 'wrong');
+  };
+  play(); advance(r);
+  assert.notEqual(r.current.activePairId, first.pairId);
+  play(); advance(r);
+  assert.equal(r.current.activePairId, first.pairId);
+  assert.notEqual(r.current.clueGiverId, first.clueGiverId);
+});
+
+// ---------- out of the mix: clues, blind opponent blocks, then one guess ----------
+function outMixRoom(builder = room) { const r = builder(); startGame(r, 'p1', { deck: [{ mode: 'out-of-the-mix', prompt: 'Describe the secret subject.', answer: 'Pizza', points: 1 }] }); return r; }
+
+test('out of the mix: assigns one active pair and never shows the clue words to opposing pairs', () => {
+  const r = outMixRoom(room3);
+  const { clueGiverId, guesserId, activePairId } = r.current;
+  const opponent = r.players.find((p) => p.pairId !== activePairId);
+  assert.equal(r.current.stage, 'clues');
+  assert.equal(publicState(r, clueGiverId).current.answer, 'Pizza');
+  assert.equal(publicState(r, clueGiverId).viewerRole, 'outMixClueGiver');
+  assert.equal(publicState(r, guesserId).current.answer, undefined);
+  assert.equal(publicState(r, guesserId).viewerRole, 'outMixGuesser');
+  assert.equal(publicState(r, opponent.id).viewerRole, 'outMixBlocker');
+  assert.equal(publicState(r, opponent.id).current.clueWords, undefined);
+  submitOutMixClues(r, clueGiverId, ['hot', 'cheesy', 'round']);
+  // Blind guessing: opposing pairs must never see the real clue words,
+  // at any stage -- unlike In the Mix's distractor stage, which shows
+  // them on purpose so the fake word can blend in.
+  assert.equal(publicState(r, opponent.id).current.clueWords, undefined);
+  assert.equal(publicState(r, guesserId).current.clueWords, undefined);
+});
+
+test('out of the mix: validates exactly three distinct one-word clues from the designated clue-giver', () => {
+  const r = outMixRoom();
+  assert.match(submitOutMixClues(r, r.current.guesserId, ['hot', 'cheesy', 'round']).error, /clue-giver/);
+  assert.match(submitOutMixClues(r, r.current.clueGiverId, ['hot', 'very cheesy', 'round']).error, /one word/);
+  assert.match(submitOutMixClues(r, r.current.clueGiverId, ['hot', 'Hot', 'round']).error, /different/);
+  const result = submitOutMixClues(r, r.current.clueGiverId, ['hot', 'cheesy', 'round'], 1000);
+  assert.equal(result.stage, 'blocking');
+  assert.deepEqual(r.current.clueWords, ['hot', 'cheesy', 'round']);
+  assert.equal(r.current.stageStartedAt, 1000);
+});
+
+test('out of the mix: a matched blind guess removes that word; an unmatched guess removes nothing', () => {
+  const r = outMixRoom(room3);
+  const { activePairId, guesserId } = r.current;
+  submitOutMixClues(r, r.current.clueGiverId, ['hot', 'cheesy', 'round']);
+  const opposingPairs = r.pairs.filter((pair) => pair.id !== activePairId);
+  const first = r.players.find((p) => p.pairId === opposingPairs[0].id);
+  const firstPartner = r.players.find((p) => p.pairId === first.pairId && p.id !== first.id);
+  const second = r.players.find((p) => p.pairId === opposingPairs[1].id);
+  assert.equal(submitOutMixBlock(r, first.id, 'HOT').stage, 'blocking'); // matches -- will be removed
+  assert.match(submitOutMixBlock(r, firstPartner.id, 'plate').error, /already submitted/);
+  assert.equal(submitOutMixBlock(r, second.id, 'plate').stage, 'guessing'); // no match -- nothing removed by this guess
+  assert.deepEqual(r.current.remainingWords, ['cheesy', 'round'], 'the matched word "hot" is gone; the others survive');
+  assert.deepEqual(publicState(r, guesserId).current.remainingWords, ['cheesy', 'round']);
+});
+
+test('out of the mix: only the designated guesser can answer, using the surviving words, and only the active pair scores', () => {
+  const r = outMixRoom();
+  const { activePairId, guesserId } = r.current;
+  submitOutMixClues(r, r.current.clueGiverId, ['hot', 'cheesy', 'round']);
+  const opponent = r.players.find((p) => p.pairId !== activePairId);
+  submitOutMixBlock(r, opponent.id, 'nope');
+  assert.match(submitOutMixGuess(r, opponent.id, 'Pizza').error, /designated guesser/);
+  const result = submitOutMixGuess(r, guesserId, 'pizza');
+  assert.equal(r.phase, 'reveal');
+  assert.equal(result.results.find((entry) => entry.pairId === activePairId).correct, true);
+  assert.equal(r.pairs.find((pair) => pair.id === activePairId).score, 1);
+  assert.equal(r.pairs.find((pair) => pair.id !== activePairId).score, 0);
+  assert.deepEqual(r.lastResult.clueWords, ['hot', 'cheesy', 'round']);
+  assert.deepEqual(r.lastResult.remainingWords, ['hot', 'cheesy', 'round']);
+});
+
+test('out of the mix: blocking timeout advances to guessing with whatever guesses actually arrived', () => {
+  const r = outMixRoom(room3);
+  submitOutMixClues(r, r.current.clueGiverId, ['hot', 'cheesy', 'round'], 1000);
+  const opponent = r.players.find((p) => p.pairId !== r.current.activePairId);
+  submitOutMixBlock(r, opponent.id, 'cheesy');
+  const result = resolveQuestion(r, 5000);
+  assert.equal(result.stage, 'guessing');
+  assert.equal(r.phase, 'question');
+  assert.equal(r.current.stageStartedAt, 5000);
+  assert.deepEqual(r.current.remainingWords, ['hot', 'round']);
+});
+
+test('out of the mix: real deck prompts never reveal their target text', () => {
+  for (const question of questionsForModes(['out-of-the-mix'])) {
+    assert.equal(question.prompt.toLowerCase().includes(String(question.answer).toLowerCase()), false, `${question.id} leaks its answer in the prompt`);
+  }
+});
+
+test('out of the mix: active pairs rotate and teammates swap clue-giver roles when their pair returns', () => {
+  const r = room();
+  const deck = ['Pizza', 'Beach', 'Coffee'].map((answer, index) => ({ mode: 'out-of-the-mix', prompt: `mix ${index}`, answer, points: 1 }));
+  startGame(r, 'p1', { deck });
+  const first = { pairId: r.current.activePairId, clueGiverId: r.current.clueGiverId };
+  const play = () => {
+    submitOutMixClues(r, r.current.clueGiverId, ['bright', 'happy', 'round']);
+    const opponent = r.players.find((player) => player.pairId !== r.current.activePairId);
+    submitOutMixBlock(r, opponent.id, 'cloud');
+    submitOutMixGuess(r, r.current.guesserId, 'wrong');
+  };
+  play(); advance(r);
+  assert.notEqual(r.current.activePairId, first.pairId);
+  play(); advance(r);
+  assert.equal(r.current.activePairId, first.pairId);
+  assert.notEqual(r.current.clueGiverId, first.clueGiverId);
+});
+
+// ---------- timeline: reference + two mystery events, ordered by the pair ----------
+function timelineQ() { return { mode: 'timeline', prompt: '?', reference: { id: 'ref', label: 'Reference', year: 2000 }, events: [{ id: 'e1', label: 'Earlier', year: 1990 }, { id: 'e2', label: 'Later', year: 2010 }], points: 1 }; }
+
+test('timeline: mystery event years are hidden from every viewer before reveal, but the reference year is shown', () => {
+  const r = room();
+  startGame(r, 'p1', { deck: [timelineQ()] });
+  const seen = publicState(r, 'p1').current;
+  assert.equal(seen.reference.year, 2000, 'the reference year is the given anchor, always visible');
+  assert.equal(seen.events.every((e) => e.year === undefined), true, 'mystery event years must not leak before reveal');
+  assert.deepEqual(seen.events.map((e) => e.id).sort(), ['e1', 'e2']);
+});
+
+test('timeline: rejects a submission that is not a full permutation of all three event ids', () => {
+  const r = room();
+  startGame(r, 'p1', { deck: [timelineQ()] });
+  assert.match(submitResponse(r, 'p1', ['ref', 'e1']).error, /full ordering/, 'missing an id');
+  assert.match(submitResponse(r, 'p1', ['ref', 'e1', 'e1']).error, /full ordering/, 'duplicate id instead of the third');
+  assert.match(submitResponse(r, 'p1', ['ref', 'e1', 'nope']).error, /full ordering/, 'unknown id');
+  assert.equal(submitResponse(r, 'p1', ['e1', 'ref', 'e2']).ok, true, 'a valid permutation is accepted');
+});
+
+test('timeline: a pair scores only when either teammate submits the true chronological order', () => {
+  const r = room();
+  startGame(r, 'p1', { deck: [timelineQ()] }); // true order: e1 (1990) -> ref (2000) -> e2 (2010)
+  submitResponse(r, 'p1', ['e1', 'ref', 'e2']); // p1+p2 pair: correct
+  submitResponse(r, 'p2', ['ref', 'e1', 'e2']); // p2 individually wrong, but p1 already got it right
+  submitResponse(r, 'p3', ['ref', 'e1', 'e2']); // p3+p4 pair: wrong order
+  submitResponse(r, 'p4', ['e2', 'e1', 'ref']); // also wrong
+  const result = resolveQuestion(r);
+  const p1pair = r.players.find((p) => p.id === 'p1').pairId;
+  const p3pair = r.players.find((p) => p.id === 'p3').pairId;
+  assert.equal(result.results.find((x) => x.pairId === p1pair).correct, true);
+  assert.equal(result.results.find((x) => x.pairId === p3pair).correct, false);
+  assert.deepEqual(r.lastResult.correctOrder, ['e1', 'ref', 'e2']);
+  assert.equal(r.lastResult.events.find((e) => e.id === 'e1').year, 1990, 'years are revealed once resolved');
+});
+
+// ---------- in the mix 2: clues, opposing multiple-choice decoys, then a tap-to-pick guess ----------
+function mix2Room(builder = room) { const r = builder(); startGame(r, 'p1', { deck: [{ mode: 'in-the-mix-2', prompt: 'Describe the secret subject.', answer: 'Pizza', points: 1 }] }); return r; }
+
+test('in the mix 2: opposing pairs see the real clue words (to write a plausible decoy), but never the correct choice id', () => {
+  const r = mix2Room(room3);
+  const { clueGiverId, guesserId, activePairId } = r.current;
+  const opponent = r.players.find((p) => p.pairId !== activePairId);
+  assert.equal(r.current.stage, 'clues');
+  assert.equal(publicState(r, clueGiverId).current.answer, 'Pizza');
+  assert.equal(publicState(r, clueGiverId).viewerRole, 'mix2ClueGiver');
+  assert.equal(publicState(r, guesserId).current.answer, undefined);
+  assert.equal(publicState(r, guesserId).viewerRole, 'mix2Guesser');
+  assert.equal(publicState(r, opponent.id).viewerRole, 'mix2Option');
+  submitMix2Clues(r, clueGiverId, ['hot', 'cheesy', 'round']);
+  assert.deepEqual(publicState(r, opponent.id).current.clueWords, ['hot', 'cheesy', 'round'], 'opponents see the clues -- they need them to write a believable decoy');
+  assert.equal(publicState(r, opponent.id).current.correctChoiceId, undefined);
+  assert.equal(publicState(r, guesserId).current.correctChoiceId, undefined);
+  assert.equal(publicState(r, clueGiverId).current.correctChoiceId, undefined, 'not even the clue-giver gets the raw flag -- they already know via answer');
+});
+
+test('in the mix 2: each opposing pair adds one decoy option and the guesser sees a shuffled multiple-choice list', () => {
+  const r = mix2Room(room3);
+  const { activePairId, clueGiverId, guesserId } = r.current;
+  submitMix2Clues(r, clueGiverId, ['hot', 'cheesy', 'round']);
+  const opposingPairs = r.pairs.filter((pair) => pair.id !== activePairId);
+  const first = r.players.find((p) => p.pairId === opposingPairs[0].id);
+  const firstPartner = r.players.find((p) => p.pairId === first.pairId && p.id !== first.id);
+  const second = r.players.find((p) => p.pairId === opposingPairs[1].id);
+  assert.equal(submitMix2Option(r, first.id, 'Calzone').stage, 'options');
+  assert.match(submitMix2Option(r, firstPartner.id, 'Bread').error, /already submitted/);
+  assert.match(submitMix2Option(r, second.id, 'Pizza').error, /isn't already an option/, 'a decoy cannot literally be the real answer');
+  assert.equal(submitMix2Option(r, second.id, 'Lasagna').stage, 'choosing');
+  assert.equal(r.current.choices.length, 3, 'the true answer plus one decoy per opposing pair');
+  assert.deepEqual(new Set(r.current.choices.map((c) => c.text)), new Set(['Pizza', 'Calzone', 'Lasagna']));
+  assert.deepEqual(publicState(r, guesserId).current.choices.map((c) => c.text).sort(), ['Calzone', 'Lasagna', 'Pizza']);
+  assert.equal(publicState(r, first.id).current.choices, undefined, 'opposing pairs do not see the final choice list');
+});
+
+test('in the mix 2: only the designated guesser can choose, and only a correct pick scores the active pair', () => {
+  const r = mix2Room();
+  const { activePairId, guesserId } = r.current;
+  submitMix2Clues(r, r.current.clueGiverId, ['hot', 'cheesy', 'round']);
+  const opponent = r.players.find((p) => p.pairId !== activePairId);
+  submitMix2Option(r, opponent.id, 'Calzone');
+  const trueChoice = r.current.choices.find((c) => c.text === 'Pizza');
+  assert.match(submitMix2Choice(r, opponent.id, trueChoice.id).error, /designated guesser/);
+  assert.match(submitMix2Choice(r, guesserId, 'not-a-real-id').error, /listed options/);
+  const result = submitMix2Choice(r, guesserId, trueChoice.id);
+  assert.equal(r.phase, 'reveal');
+  assert.equal(result.results.find((entry) => entry.pairId === activePairId).correct, true);
+  assert.equal(r.pairs.find((pair) => pair.id === activePairId).score, 1);
+  assert.equal(r.lastResult.chosenId, trueChoice.id);
+  assert.equal(r.lastResult.correctChoiceId, trueChoice.id);
+});
+
+test('in the mix 2: picking a decoy does not score the active pair', () => {
+  const r = mix2Room();
+  const { activePairId, guesserId } = r.current;
+  submitMix2Clues(r, r.current.clueGiverId, ['hot', 'cheesy', 'round']);
+  const opponent = r.players.find((p) => p.pairId !== activePairId);
+  submitMix2Option(r, opponent.id, 'Calzone');
+  const decoy = r.current.choices.find((c) => c.text === 'Calzone');
+  const result = submitMix2Choice(r, guesserId, decoy.id);
+  assert.equal(result.results.find((entry) => entry.pairId === activePairId).correct, false);
+  assert.equal(r.pairs.find((pair) => pair.id === activePairId).score, 0);
+});
+
+test('in the mix 2: real deck prompts never reveal their target text', () => {
+  for (const question of questionsForModes(['in-the-mix-2'])) {
+    assert.equal(question.prompt.toLowerCase().includes(String(question.answer).toLowerCase()), false, `${question.id} leaks its answer in the prompt`);
+  }
 });

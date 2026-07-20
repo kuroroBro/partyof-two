@@ -24,9 +24,12 @@ generated QR code or room code; contestants join from their phones.
 The current MVP includes the lobby, even-roster validation, player pairing,
 PeerJS room transport, QR invite, private answer submission, question/reveal
 flow, pair scoring, reconnect tokens, final standings, and rematch flow. The
-seven concept modes are represented in the question deck and use the shared
-response engine; richer mode-specific controls and steal/timer rules remain
-follow-up work tracked in `tasks.md`.
+seven concept modes are represented in the question deck, and every mode has
+dedicated scoring rules: Averages, Two Words, and Timeline judge all pairs in
+parallel, while Emojis, In the Mix, Out of the Mix, and In the Mix 2 rotate a
+clue-giver/guesser pair through role-specific, privacy-redacted views. Round
+sequencing, pair identity/branding, and richer input widgets for some modes
+remain follow-up work tracked in `tasks.md`.
 
 Run the automated checks with:
 

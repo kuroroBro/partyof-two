@@ -25,13 +25,49 @@
       exact match to the target instead).
 - [x] Implement Emojis clue/guess validation and timeout steal flow (see
       Bugfixes below — previously this mode had no role split at all).
-- [ ] Implement In the Mix clue mixing and Out of the Mix word removal.
-- [ ] Implement Two Words pair-only split-answer validation.
-- [ ] Implement Timeline ordering and In the Mix 2 option construction.
+- [x] Implement In the Mix clue mixing, role-specific privacy, opponent
+      distractors, and active-pair scoring.
+- [x] Implement Out of the Mix word removal. Mirrors In the Mix's
+      clue-giver/guesser split, but inverted: opposing pairs guess a
+      word BLIND (never shown the real clue words, unlike In the Mix's
+      distractor stage) and any accidental match is removed from what
+      the guesser sees, instead of being added as a lookalike
+      distractor. 7 new regression tests; live-verified with 6 real
+      browser contexts over PeerJS — confirmed opposing pairs' pages
+      never contain the real clue words at any stage, a matching blind
+      guess was actually removed, an unmatched guess left the set
+      untouched, and the guesser only ever saw the survivors.
+- [x] Implement Two Words pair-only split-answer validation -- already
+      covered by `resolvePair`'s dedicated `two-words` branch (each
+      teammate's private word must be one of the two required words,
+      and both must be present between them); regression-tested since
+      the very first commit, the checkbox was simply stale.
+- [x] Implement Timeline ordering. Not role-split like the other Mix
+      modes -- a shared pair task, same "all pairs answer in parallel"
+      shape as Averages/generic. Content now carries a `reference`
+      (label + known year) plus two mystery `events` (label only); the
+      pair taps all three into what they believe is chronological order.
+      The two mystery years are stripped from every viewer's payload
+      until reveal (game.js's `redactCurrentForViewer`) -- previously
+      the "content" was just plain "what year did X happen" trivia with
+      no ordering mechanic at all. 3 new regression tests; live-verified
+      with 2 real browser contexts over PeerJS.
+- [x] Implement In the Mix 2 option construction. Same clue-giver/guesser
+      split as In the Mix (and opposing pairs see the real clue words,
+      same privacy model, so they can write a plausible decoy), but
+      opponents each submit a full decoy ANSWER instead of one lookalike
+      word, and the guesser taps a shuffled multiple-choice list instead
+      of typing free text. The correct choice's id is never sent to any
+      viewer pre-reveal (not even the clue-giver, who already knows via
+      `answer`) -- only `lastResult.correctChoiceId` reveals it. 5 new
+      regression tests; live-verified with 6 real browser contexts over
+      PeerJS.
 - [x] Add question-level timer behavior: a shared deadline set when the
       question is dealt, force-resolving on expiry regardless of who has
-      answered (see Bugfixes below). Per-mode role rotation is still
-      outstanding.
+      answered (see Bugfixes below). Per-mode role rotation is now also
+      implemented for every role-split mode (Emojis, In the Mix, Out of
+      the Mix, In the Mix 2), each with its own rotation counter so
+      every pair takes a turn and every player gets both roles.
 - [x] Add viewer-specific redaction for answers, clues, options, and pending
       private responses.
 

@@ -104,6 +104,20 @@ input:focus, select:focus { border-color: var(--coral); }
 .answer-form .btn { width: 100%; }
 .answer-form input:disabled { border-color: #8ad7b9; background: #effbf6; color: var(--ink); opacity: 1; }
 .answer-status { color: var(--teal-2); font-size: .82rem; font-weight: 850; text-align: center; }
+.mix-inputs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.mix-inputs input { min-width: 0; text-align: center; }
+.mix-words { display: flex; flex-wrap: wrap; justify-content: center; gap: 9px; padding: 5px 0; }
+.mix-word { padding: 10px 15px; border: 2px solid #f0e4d8; border-radius: 999px; background: white; color: var(--plum); font-weight: 900; box-shadow: 0 4px 12px rgba(43, 33, 64, .08); }
+.mix-text-control { display: grid; gap: 10px; }
+.mix-reveal { margin: 0; padding: 14px 16px; border-radius: 16px; background: #eaf6f5; color: var(--plum); font-weight: 750; line-height: 1.5; text-align: center; }
+.timeline-cards { display: grid; gap: 10px; }
+.timeline-card { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border: 2px solid #f0e4d8; border-radius: 16px; background: white; color: var(--plum); font-weight: 800; text-align: left; box-shadow: 0 4px 12px rgba(43, 33, 64, .08); }
+.timeline-card.picked { border-color: var(--teal); background: #eaf6f5; }
+.timeline-card:disabled { opacity: .7; }
+.timeline-badge { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex-shrink: 0; border-radius: 50%; background: #f0e4d8; color: var(--plum); font-weight: 900; font-size: .85rem; }
+.timeline-card.picked .timeline-badge { background: var(--teal); color: white; }
+.timeline-label { flex: 1; }
+.timeline-year { color: var(--teal-2); font-weight: 900; }
 .room-invite { min-width: 105px; display: grid; gap: 4px; justify-items: center; }
 .room-invite small { max-width: 120px; color: #cdeae7; font-size: .6rem; overflow-wrap: anywhere; text-align: center; }
 .room-qr { width: 88px; height: 88px; }
@@ -193,6 +207,7 @@ h2 { margin: 0 0 22px; color: var(--plum); font-size: clamp(1.75rem, 7vw, 2.7rem
   .room-code-copy { justify-items: center; }
   .room-card .btn { width: 100%; }
   .room-invite { justify-content: center; text-align: left; }
+  .mix-inputs { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
