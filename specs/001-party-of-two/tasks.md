@@ -249,6 +249,22 @@ as any generic mode.
   reach reveal. Combined with the existing 48/48 passing unit tests
   (unaffected, since only content data changed, not engine code).
 
+## Integration (2026-07-20, part 5) — wired to the cross-game Leader Board
+
+- [x] Party of Two now records every finished show to the cross-game
+      Leader Board (`../leader-board/`), via the `setup-leaderboard` skill.
+      `js/leaderboard.js` (vendored recorder) and `leaderboard-bridge.html`
+      were added; `recordShow()` in `js/main.js` fires from the one
+      Host-only place a show authoritatively ends (`hostMessage`'s `'next'`
+      branch, when `game.advance(...)` returns `done`). Recorded player
+      scores use each player's PAIR score (matching what `renderOver()`
+      already shows on screen), not the engine's internal per-player
+      fractional split — the two are different numbers, and only the pair
+      score is what players actually saw. Data stays in the Host's own
+      browser under this game's own origin; contestants never record.
+      Live-verified over a real cross-origin bridge to the Leader Board
+      site (see `leader-board/specs/001-leader-board/tasks.md`).
+
 ## Open decisions before implementation
 
 - [ ] Confirm whether the Host may also be a contestant in Party of Two or

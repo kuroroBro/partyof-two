@@ -1,6 +1,7 @@
 import * as game from './game.js';
 import {hostRoom,joinRoom,normalizeCode} from './room.js';
 import {createResumeToken,loadPlayerSession,savePlayerSession,loadUsedQuestionIds,markQuestionsUsed} from './storage.js';
+import {recordShowResult} from './leaderboard.js';
 const $=id=>document.getElementById(id), screens=['home','lobby','question','reveal','over']; let transport,state,myId,isHost=false,hostRoomState; const answerDrafts=new Map();
 const show=s=>screens.forEach(x=>$(`screen-${x}`).classList.toggle('hidden',x!==s));
 const me=()=>state?.players?.find(p=>p.id===myId); const call=(names,...args)=>{for(const n of names)if(typeof game[n]==='function')return game[n](...args);return null};
@@ -13,7 +14,30 @@ function invite(code){const url=`${location.origin}${location.pathname}?room=${c
 // so a stray answer field would have leaked identically to every device
 // the instant Emojis roles existed).
 function publish(){state=call(['toPublicState','publicState'],hostRoomState,myId)||hostRoomState;transport?.broadcastEach?.(viewerId=>({event:'state',payload:call(['toPublicState','publicState'],hostRoomState,viewerId)}));render()}
-function hostMessage(id,event,payload){let r;if(event==='join'){r=payload.resumeToken?game.rejoinPlayer(hostRoomState,id,payload.resumeToken):{error:'No saved seat found'};if(r?.error)r=game.addPlayer(hostRoomState,id,payload.name,payload.resumeToken)}else if(event==='proposePair')r=game.proposePair(hostRoomState,id,payload.targetId);else if(event==='start'){r=game.startGame(hostRoomState,id,{...payload,usedIds:loadUsedQuestionIds()});if(!r?.error)markQuestionsUsed(hostRoomState.deck.map(q=>q.id))}else if(event==='submitResponse'){r=game.submitResponse(hostRoomState,id,payload.response);if(!r?.error&&game.allPlayersSubmitted(hostRoomState))game.resolveQuestion(hostRoomState)}else if(event==='submitMixClues')r=game.submitMixClues(hostRoomState,id,payload.words);else if(event==='submitMixDistractor')r=game.submitMixDistractor(hostRoomState,id,payload.word);else if(event==='submitMixGuess')r=game.submitMixGuess(hostRoomState,id,payload.response);else if(event==='submitOutMixClues')r=game.submitOutMixClues(hostRoomState,id,payload.words);else if(event==='submitOutMixBlock')r=game.submitOutMixBlock(hostRoomState,id,payload.word);else if(event==='submitOutMixGuess')r=game.submitOutMixGuess(hostRoomState,id,payload.response);else if(event==='submitMix2Clues')r=game.submitMix2Clues(hostRoomState,id,payload.words);else if(event==='submitMix2Option')r=game.submitMix2Option(hostRoomState,id,payload.text);else if(event==='submitMix2Choice')r=game.submitMix2Choice(hostRoomState,id,payload.choiceId);else if(event==='claimSteal')r=game.claimSteal(hostRoomState,id);else if(event==='submitSteal')r=game.submitStealResponse(hostRoomState,id,payload.response);else if(event==='next'){game.resolveQuestion(hostRoomState);r=game.advance(hostRoomState)}else if(event==='rematch')r=game.rematch(hostRoomState,id,true);publish();return {ok:!r?.error,error:r?.error,state:game.publicState(hostRoomState,id)}}
+function hostMessage(id,event,payload){let r;if(event==='join'){r=payload.resumeToken?game.rejoinPlayer(hostRoomState,id,payload.resumeToken):{error:'No saved seat found'};if(r?.error)r=game.addPlayer(hostRoomState,id,payload.name,payload.resumeToken)}else if(event==='proposePair')r=game.proposePair(hostRoomState,id,payload.targetId);else if(event==='start'){r=game.startGame(hostRoomState,id,{...payload,usedIds:loadUsedQuestionIds()});if(!r?.error)markQuestionsUsed(hostRoomState.deck.map(q=>q.id))}else if(event==='submitResponse'){r=game.submitResponse(hostRoomState,id,payload.response);if(!r?.error&&game.allPlayersSubmitted(hostRoomState))game.resolveQuestion(hostRoomState)}else if(event==='submitMixClues')r=game.submitMixClues(hostRoomState,id,payload.words);else if(event==='submitMixDistractor')r=game.submitMixDistractor(hostRoomState,id,payload.word);else if(event==='submitMixGuess')r=game.submitMixGuess(hostRoomState,id,payload.response);else if(event==='submitOutMixClues')r=game.submitOutMixClues(hostRoomState,id,payload.words);else if(event==='submitOutMixBlock')r=game.submitOutMixBlock(hostRoomState,id,payload.word);else if(event==='submitOutMixGuess')r=game.submitOutMixGuess(hostRoomState,id,payload.response);else if(event==='submitMix2Clues')r=game.submitMix2Clues(hostRoomState,id,payload.words);else if(event==='submitMix2Option')r=game.submitMix2Option(hostRoomState,id,payload.text);else if(event==='submitMix2Choice')r=game.submitMix2Choice(hostRoomState,id,payload.choiceId);else if(event==='claimSteal')r=game.claimSteal(hostRoomState,id);else if(event==='submitSteal')r=game.submitStealResponse(hostRoomState,id,payload.response);else if(event==='next'){game.resolveQuestion(hostRoomState);r=game.advance(hostRoomState);if(r?.done)recordShow()}else if(event==='rematch')r=game.rematch(hostRoomState,id,true);publish();return {ok:!r?.error,error:r?.error,state:game.publicState(hostRoomState,id)}}
+// Records the finished show for the cross-game Leader Board, from the
+// exact same final state renderOver() shows the players -- see
+// leader-board/specs/001-leader-board/. Host-only (this whole function
+// only ever runs inside hostMessage, which only runs on the Host device).
+function recordShow(){
+  const teams=hostRoomState.pairs.map(pair=>{
+    const memberNames=pair.memberIds.map(pid=>game.getPlayer(hostRoomState,pid)?.name).filter(Boolean);
+    return {name:memberNames.join(' + '),members:memberNames,score:pair.score||0};
+  });
+  const winners=hostRoomState.pairs.filter(pair=>(hostRoomState.winnerPairIds||[]).includes(pair.id))
+    .flatMap(pair=>pair.memberIds.map(pid=>game.getPlayer(hostRoomState,pid)?.name).filter(Boolean));
+  // Party of Two is scored by PAIR -- the over screen shows each pair's
+  // shared score, not each player's internal per-player split (an engine
+  // bookkeeping detail players never see). Recorded player scores use the
+  // same pair score so the leaderboard agrees with what was on screen.
+  const scoreByPairId=Object.fromEntries(hostRoomState.pairs.map(pair=>[pair.id,pair.score||0]));
+  recordShowResult({
+    game:'partyof-two',gameName:'Party of Two',
+    players:hostRoomState.players.map(p=>({name:p.name,score:scoreByPairId[p.pairId]??(p.score||0)})),
+    teams,winners,
+    meta:{modes:hostRoomState.settings.modes,questions:hostRoomState.deck.length},
+  });
+}
 function hostClose(id){if(hostRoomState)game.removePlayer(hostRoomState,id);publish()}
 async function create(){try{isHost=true;const name=$('name-input').value.trim()||'Host';transport=await hostRoom({onMessage:hostMessage,onPeerClose:hostClose,onError:e=>toast(e)});myId='host';hostRoomState=game.createRoom(transport.code,myId);if(!$('display-checkbox').checked)game.addPlayer(hostRoomState,myId,name);state=game.publicState(hostRoomState,myId);localStorage.setItem('partyofTwoLast',transport.code);render()}catch(e){$('home-error').textContent=e.message}}
 async function join(){try{isHost=false;const code=normalizeCode($('code-input').value);if(code.length!==4)throw Error('Enter the four-letter room code.');const saved=loadPlayerSession(code);const resumeToken=saved?.resumeToken||createResumeToken();transport=await joinRoom(code,{onPush:(e,p)=>{if(e==='state'){state=p;render()}},onClose:e=>toast(e)});myId=transport.id;const result=await transport.send('join',{name:$('name-input').value.trim()||saved?.name||'Player',resumeToken});savePlayerSession(code,{resumeToken,name:$('name-input').value.trim()||saved?.name||'Player'});state=result?.state||state;render()}catch(e){$('home-error').textContent=e.message}}
