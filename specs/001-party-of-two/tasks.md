@@ -229,6 +229,26 @@ as any generic mode.
   for the two non-active pairs, and a missed steal correctly reopened
   the window for the last remaining pair instead of ending the round.
 
+## Content (2026-07-20, part 4) — expanded question bank to 100 per mode
+
+- [x] Grew `js/questions.js` from 15 to 100 distinct questions per mode
+      (700 total, up from 105). The original 15 hand-authored entries per
+      mode are unchanged; the new 85 per mode were checked for global
+      prompt/id uniqueness, within-mode answer uniqueness (no person or
+      concept is the answer to two different cards in the same 100-card
+      deck), and — for Timeline specifically — distinct years within
+      every reference/event triple. A sample of the least-certain
+      Timeline dates (the first UPC barcode scan, Diners Club's founding,
+      Concorde's first commercial flight, the first F1 World Championship
+      season) was independently verified via web search.
+- Added a one-off engine-level smoke test (not checked into
+  `tests/game.test.mjs`, since it duplicates the mode-specific unit
+  tests at data-driven scale) that ran every one of the 700 questions
+  through the real submit/resolve pipeline end-to-end — not just a
+  handful of samples — confirming none of them error out or fail to
+  reach reveal. Combined with the existing 48/48 passing unit tests
+  (unaffected, since only content data changed, not engine code).
+
 ## Open decisions before implementation
 
 - [ ] Confirm whether the Host may also be a contestant in Party of Two or
